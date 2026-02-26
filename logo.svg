@@ -1,0 +1,5 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Same geometry as favicon.svg, just different colors for light bg -->
+  <path d="M 256 88 L 368 200 L 256 312 L 144 200 Z" fill="none" stroke="#2C2C2C" stroke-width="30" stroke-linejoin="miter"/>
+  <path d="M 144 268 L 256 380 L 368 268" fill="none" stroke="#2B7269" stroke-width="30" stroke-linejoin="miter" stroke-linecap="square"/>
+</svg>

@@ -1,0 +1,29 @@
+{
+  "name": "n8n-nodes-baserow-plus",
+  "version": "3.0.0",
+  "description": "Production-grade n8n community node for Baserow — field-type-aware serialization, true batch API, upsert, lookup, retry with backoff, and parallel multi-table fetch.",
+  "main": "index.js",
+  "n8n": {
+    "nodes": [
+      "BaserowPlus.node.js"
+    ],
+    "credentials": [
+      "BaserowPlus.credentials.js"
+    ]
+  },
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n-custom-node",
+    "baserow",
+    "database",
+    "no-code",
+    "batch",
+    "upsert"
+  ],
+  "author": "Steven Lefebvre",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Expert-Local/n8n-nodes-baserow-plus"
+  }
+}
