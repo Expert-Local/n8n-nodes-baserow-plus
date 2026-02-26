@@ -4,6 +4,7 @@
   "description": "Production-grade n8n community node for Baserow — field-type-aware serialization, true batch API, upsert, lookup, retry with backoff, and parallel multi-table fetch.",
   "main": "index.js",
   "n8n": {
+    "n8nNodesApiVersion": 1,
     "nodes": [
       "BaserowPlus.node.js"
     ],
