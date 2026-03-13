@@ -45,10 +45,14 @@ function chunkArray(arr, size) {
 /**
  * Extracts a human-readable error message from a Baserow API error response.
  *
- * @param {Error} error - The raw error from the HTTP request.
- * @returns {string} Formatted error message with Baserow error code and detail.
+ * When idToName is provided, validation errors translate field IDs (field_267)
+ * into their human-readable column names so users see exactly which field failed.
+ *
+ * @param {Error}  error     - The raw error from the HTTP request.
+ * @param {object} [idToName={}] - Optional map of field_xxx → column name.
+ * @returns {string} Formatted error message.
  */
-function parseBaserowError(error) {
+function parseBaserowError(error, idToName = {}) {
     // n8n wraps HTTP errors — try to get the response body
     let body = error.response?.body || error.error || error.body;
     if (typeof body === 'string') {
@@ -57,8 +61,25 @@ function parseBaserowError(error) {
 
     if (body && typeof body === 'object') {
         const code = body.error || 'UNKNOWN';
-        const detail = body.detail || body.message || JSON.stringify(body);
-        return `[BaserowPlus] API error (${code}): ${detail}`;
+        const detail = body.detail;
+
+        // Validation errors: detail is an object keyed by field_xxx
+        if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+            const fieldErrors = [];
+            for (const [fieldKey, errors] of Object.entries(detail)) {
+                const fieldName = idToName[fieldKey] || fieldKey;
+                const messages = Array.isArray(errors)
+                    ? errors.map(e => (typeof e === 'string' ? e : (e.detail || e.message || JSON.stringify(e)))).join('; ')
+                    : String(errors);
+                fieldErrors.push(`"${fieldName}": ${messages}`);
+            }
+            if (fieldErrors.length > 0) {
+                return `[BaserowPlus] Validation failed — ${fieldErrors.join(' | ')}`;
+            }
+        }
+
+        const detailStr = typeof detail === 'string' ? detail : (body.message || JSON.stringify(body));
+        return `[BaserowPlus] API error (${code}): ${detailStr}`;
     }
 
     return `[BaserowPlus] ${error.message || 'Unknown error'}`;
@@ -77,7 +98,7 @@ function parseBaserowError(error) {
  * @param {number} timeout - Request timeout in milliseconds.
  * @returns {Promise<*>} The parsed response body.
  */
-async function requestWithRetry(ctx, opts, timeout = DEFAULT_TIMEOUT_MS) {
+async function requestWithRetry(ctx, opts, timeout = DEFAULT_TIMEOUT_MS, idToName = {}) {
     const reqOpts = { ...opts, timeout };
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -98,8 +119,8 @@ async function requestWithRetry(ctx, opts, timeout = DEFAULT_TIMEOUT_MS) {
                 continue;
             }
 
-            // Enrich the error message with Baserow details
-            error.message = parseBaserowError(error);
+            // Enrich the error message with Baserow details and field name translation
+            error.message = parseBaserowError(error, idToName);
             throw error;
         }
     }
@@ -119,7 +140,7 @@ async function requestWithRetry(ctx, opts, timeout = DEFAULT_TIMEOUT_MS) {
  * @param {string}  tableId      - Numeric Baserow table ID.
  * @param {boolean} [forceRefresh=false] - When true, ignores cached data.
  * @param {number}  [timeout]    - Request timeout in ms.
- * @returns {Promise<{idToName: object, nameToId: object, fieldTypes: object, timestamp: number, fieldCount: number}>}
+ * @returns {Promise<{idToName: object, nameToId: object, fieldTypes: object, fieldMeta: object, timestamp: number, fieldCount: number}>}
  */
 async function getFieldMaps(ctx, baseUrl, apiToken, tableId, forceRefresh = false, timeout = DEFAULT_TIMEOUT_MS) {
     const cacheKey = `${tableId}_${baseUrl}`;
@@ -144,6 +165,7 @@ async function getFieldMaps(ctx, baseUrl, apiToken, tableId, forceRefresh = fals
         const idToName = {};
         const nameToId = {};
         const fieldTypes = {};
+        const fieldMeta = {};
 
         for (const field of res) {
             idToName[`field_${field.id}`] = field.name;
@@ -151,9 +173,15 @@ async function getFieldMaps(ctx, baseUrl, apiToken, tableId, forceRefresh = fals
             fieldTypes[field.name] = field.type;
             // Also store by field_id key for lookups when working with raw IDs
             fieldTypes[`field_${field.id}`] = field.type;
+            // Store decimal_places for number fields (used for auto-rounding)
+            if (field.type === 'number' && field.decimal_places !== undefined) {
+                const meta = { decimal_places: field.decimal_places };
+                fieldMeta[field.name] = meta;
+                fieldMeta[`field_${field.id}`] = meta;
+            }
         }
 
-        fieldCache[cacheKey] = { idToName, nameToId, fieldTypes, timestamp: now, fieldCount: res.length };
+        fieldCache[cacheKey] = { idToName, nameToId, fieldTypes, fieldMeta, timestamp: now, fieldCount: res.length };
         console.log(`[BaserowPlus] Cached ${res.length} fields (with types) for table ${tableId}`);
         return fieldCache[cacheKey];
     } catch (error) {
@@ -266,9 +294,10 @@ function pickFields(obj, fields) {
  *
  * @param {*}      value     - Raw value from the n8n item.
  * @param {string} [fieldType] - Baserow field type string (e.g. 'link_row', 'boolean').
+ * @param {object} [meta]      - Field metadata (e.g. { decimal_places: 2 } for number fields).
  * @returns {*} Sanitized value, or `undefined` to skip the field.
  */
-function sanitizeWriteValue(value, fieldType) {
+function sanitizeWriteValue(value, fieldType, meta) {
     // Skip nulls and undefineds entirely
     if (value === null || value === undefined) return undefined;
 
@@ -283,7 +312,10 @@ function sanitizeWriteValue(value, fieldType) {
                         .filter(v => v !== null && v !== undefined)
                         .map(v => {
                             const n = Number(v);
-                            return Number.isInteger(n) ? n : v;
+                            if (!Number.isInteger(n)) {
+                                throw new Error(`[BaserowPlus] link_row value "${v}" is not a valid integer row ID.`);
+                            }
+                            return n;
                         });
                 }
                 // Single integer → wrap in array
@@ -315,11 +347,19 @@ function sanitizeWriteValue(value, fieldType) {
                 return Boolean(value);
             }
 
-            case 'number':
+            case 'number': {
+                const n = typeof value === 'number' ? value : Number(value);
+                if (isNaN(n)) return undefined;
+                // Auto-round to the field's configured decimal places
+                if (meta?.decimal_places !== undefined) {
+                    return parseFloat(n.toFixed(meta.decimal_places));
+                }
+                return n;
+            }
+
             case 'rating': {
-                if (typeof value === 'number') return value;
-                const n = Number(value);
-                return isNaN(n) ? undefined : n;
+                const n = typeof value === 'number' ? value : Number(value);
+                return isNaN(n) ? undefined : Math.round(n);
             }
 
             case 'single_select': {
@@ -406,12 +446,13 @@ function sanitizeWriteValue(value, fieldType) {
 /**
  * Builds a Baserow write body from a manually configured `fields` fixedCollection.
  */
-function buildBodyFromFields(fieldsInput, useNames, returnRaw, nameToId, fieldTypes) {
+function buildBodyFromFields(fieldsInput, useNames, returnRaw, nameToId, fieldTypes, fieldMeta = {}) {
     const body = {};
     for (const f of fieldsInput.field || []) {
-        // Resolve field type: try by human name first, then by mapped field_id
+        // Resolve field type and metadata: try by human name first, then by mapped field_id
         const ft = fieldTypes?.[f.name] || fieldTypes?.[nameToId?.[f.name]];
-        const sanitized = sanitizeWriteValue(f.value, ft);
+        const meta = fieldMeta?.[f.name] || fieldMeta?.[nameToId?.[f.name]];
+        const sanitized = sanitizeWriteValue(f.value, ft, meta);
         if (sanitized === undefined) continue;
         const key = useNames && !returnRaw ? (nameToId[f.name] || f.name) : f.name;
         body[key] = sanitized;
@@ -422,13 +463,14 @@ function buildBodyFromFields(fieldsInput, useNames, returnRaw, nameToId, fieldTy
 /**
  * Builds a Baserow write body from the entire incoming n8n item JSON.
  */
-function buildBodyFromObject(obj, useNames, returnRaw, nameToId, fieldTypes) {
+function buildBodyFromObject(obj, useNames, returnRaw, nameToId, fieldTypes, fieldMeta = {}) {
     if (!obj) return {};
     const body = {};
     for (const [k, v] of Object.entries(obj)) {
-        // Resolve field type: try by human name first, then by mapped field_id
+        // Resolve field type and metadata: try by human name first, then by mapped field_id
         const ft = fieldTypes?.[k] || fieldTypes?.[nameToId?.[k]];
-        const sanitized = sanitizeWriteValue(v, ft);
+        const meta = fieldMeta?.[k] || fieldMeta?.[nameToId?.[k]];
+        const sanitized = sanitizeWriteValue(v, ft, meta);
         if (sanitized === undefined) continue;
         const key = useNames && !returnRaw ? (nameToId[k] || k) : k;
         body[key] = sanitized;
@@ -526,7 +568,7 @@ class BaserowPlus {
             icon: 'fa:table',
             group: ['input'],
             version: 3,
-            description: 'Production-grade Baserow node — field-type-aware serialization, true batch API, upsert, lookup, retry with backoff, and parallel multi-table fetch.',
+            description: 'Production-grade Baserow node — field-type-aware serialization, decimal auto-normalization, human-readable errors, true batch API, upsert, lookup, retry with backoff, and parallel multi-table fetch.',
             defaults: {
                 name: 'Baserow Plus',
                 color: '#00aaff',
@@ -692,8 +734,7 @@ class BaserowPlus {
                     name: 'requestTimeout',
                     type: 'number',
                     default: 30000,
-                    displayOptions: { hide: { operation: ['completeAnalysis'] } },
-                    description: 'Timeout for each API request in milliseconds. Increase for large batch operations.',
+                    description: 'Timeout for each API request in milliseconds. Increase for large batch or multi-table operations.',
                 },
                 {
                     displayName: 'Auto Map All Input Fields',
@@ -743,15 +784,16 @@ class BaserowPlus {
                     displayName: 'Fetch All',
                     name: 'fetchAll',
                     type: 'boolean',
-                    default: false,
+                    default: true,
                     displayOptions: { show: { operation: ['list'] } },
-                    description: 'When enabled, automatically paginates through all rows.',
+                    description: 'Automatically paginates through all rows. Disable to return a single page (up to Page Size).',
                 },
                 {
                     displayName: 'Page Size',
                     name: 'pageSize',
                     type: 'number',
                     default: 100,
+                    typeOptions: { minValue: 1, maxValue: 200 },
                     displayOptions: { show: { operation: ['list'] } },
                     description: 'Number of rows per page (max 200).',
                 },
@@ -891,10 +933,10 @@ class BaserowPlus {
                 {
                     displayName: 'Row ID',
                     name: 'rowId',
-                    type: 'number',
-                    default: 1,
+                    type: 'string',
+                    default: '',
                     displayOptions: { show: { operation: ['update', 'delete'] } },
-                    description: 'The ID of the row to update or delete.',
+                    description: 'Row ID to target. Leave empty to auto-detect from the input item\'s "id" field (works automatically after List, Get, or Lookup operations).',
                 },
 
                 // ── Batch Operations ───────────────────────────────────────
@@ -1042,7 +1084,8 @@ class BaserowPlus {
             }
 
             try {
-                const result = await fetchMultipleTables(this, base, apiToken, filterField, filterValue, tables, DEFAULT_TIMEOUT_MS);
+                const timeout = this.getNodeParameter('requestTimeout', 0, DEFAULT_TIMEOUT_MS);
+                const result = await fetchMultipleTables(this, base, apiToken, filterField, filterValue, tables, timeout);
                 const tokenEstimate = Math.round(JSON.stringify(result).length / 4);
 
                 returnData.push({
@@ -1076,18 +1119,20 @@ class BaserowPlus {
         let idToName = {};
         let nameToId = {};
         let fieldTypes = {};
+        let fieldMeta = {};
 
         if (useNames && !returnRaw) {
             const maps = await getFieldMaps(this, base, apiToken, tableId, refreshSchema, timeout);
             idToName = maps.idToName;
             nameToId = maps.nameToId;
             fieldTypes = maps.fieldTypes || {};
+            fieldMeta = maps.fieldMeta || {};
         }
 
         const headers = { Authorization: `Token ${apiToken}` };
 
-        /** Executes an HTTP request with retry on 429. */
-        const request = async (opts) => requestWithRetry(this, { ...opts, headers: { ...headers, ...opts.headers } }, timeout);
+        /** Executes an HTTP request with retry on 429. Passes idToName for readable error messages. */
+        const request = async (opts) => requestWithRetry(this, { ...opts, headers: { ...headers, ...opts.headers } }, timeout, idToName);
 
         /**
          * Maps a raw Baserow row to human-readable field names and cleans select values.
@@ -1100,7 +1145,7 @@ class BaserowPlus {
         // ── List ───────────────────────────────────────────────────────────
         if (operation === 'list') {
             const fetchAll     = this.getNodeParameter('fetchAll', 0, false);
-            const size         = this.getNodeParameter('pageSize', 0, 100);
+            const size         = Math.min(Math.max(this.getNodeParameter('pageSize', 0, 100), 1), 200);
             const maxRecords   = this.getNodeParameter('maxRecords', 0, 0);
             const searchQuery  = this.getNodeParameter('searchQuery', 0, '');
             const includeFieldsStr = this.getNodeParameter('includeFields', 0, '');
@@ -1156,7 +1201,6 @@ class BaserowPlus {
                     }
                     returnData.push(record);
                     total++;
-                    if (!fetchAll && size && total >= size) break;
                     if (maxRecords > 0 && total >= maxRecords) break;
                 }
 
@@ -1175,9 +1219,22 @@ class BaserowPlus {
             if (typeof rowIdsStr !== 'string') rowIdsStr = String(rowIdsStr);
             const ids = rowIdsStr.split(',').map((s) => s.trim()).filter(Boolean);
 
-            for (let i = 0; i < (ids.length || 1); i++) {
+            // Auto-detect: if no explicit IDs provided, pull "id" from each input item
+            if (ids.length === 0) {
+                for (const item of items) {
+                    if (item.json && item.json.id) {
+                        ids.push(String(item.json.id));
+                    }
+                }
+            }
+
+            if (ids.length === 0) {
+                throw new Error('[BaserowPlus] No Row IDs provided. Enter IDs explicitly or ensure input items have an "id" field (e.g. from a List or Lookup operation).');
+            }
+
+            for (let i = 0; i < ids.length; i++) {
                 try {
-                    const rowId = ids[i] ? Number(ids[i]) : Number(this.getNodeParameter('rowId', i, 1));
+                    const rowId = Number(ids[i]);
                     const res = await request({
                         method: 'GET',
                         uri: `${base}/api/database/rows/table/${tableId}/${rowId}/`,
@@ -1198,8 +1255,8 @@ class BaserowPlus {
             for (let i = 0; i < items.length; i++) {
                 try {
                     const body = autoMapAll
-                        ? buildBodyFromObject(items[i].json, useNames, returnRaw, nameToId, fieldTypes)
-                        : buildBodyFromFields(this.getNodeParameter('fields', i, { field: [] }), useNames, returnRaw, nameToId, fieldTypes);
+                        ? buildBodyFromObject(items[i].json, useNames, returnRaw, nameToId, fieldTypes, fieldMeta)
+                        : buildBodyFromFields(this.getNodeParameter('fields', i, { field: [] }), useNames, returnRaw, nameToId, fieldTypes, fieldMeta);
 
                     const res = await request({
                         method: 'POST',
@@ -1221,10 +1278,18 @@ class BaserowPlus {
             const autoMapAll = this.getNodeParameter('autoMapAll', 0, true);
             for (let i = 0; i < items.length; i++) {
                 try {
-                    const rowId = this.getNodeParameter('rowId', i);
+                    let rowId = this.getNodeParameter('rowId', i, '');
+                    if (!rowId && items[i].json.id) {
+                        rowId = Number(items[i].json.id);
+                    } else {
+                        rowId = Number(rowId);
+                    }
+                    if (!rowId || isNaN(rowId)) {
+                        throw new Error('[BaserowPlus] Row ID is required. Set it explicitly or ensure input items have an "id" field (e.g. from a List or Get operation).');
+                    }
                     const body = autoMapAll
-                        ? buildBodyFromObject(items[i].json, useNames, returnRaw, nameToId, fieldTypes)
-                        : buildBodyFromFields(this.getNodeParameter('fields', i, { field: [] }), useNames, returnRaw, nameToId, fieldTypes);
+                        ? buildBodyFromObject(items[i].json, useNames, returnRaw, nameToId, fieldTypes, fieldMeta)
+                        : buildBodyFromFields(this.getNodeParameter('fields', i, { field: [] }), useNames, returnRaw, nameToId, fieldTypes, fieldMeta);
 
                     const res = await request({
                         method: 'PATCH',
@@ -1245,7 +1310,15 @@ class BaserowPlus {
         if (operation === 'delete') {
             for (let i = 0; i < items.length; i++) {
                 try {
-                    const rowId = this.getNodeParameter('rowId', i);
+                    let rowId = this.getNodeParameter('rowId', i, '');
+                    if (!rowId && items[i].json.id) {
+                        rowId = Number(items[i].json.id);
+                    } else {
+                        rowId = Number(rowId);
+                    }
+                    if (!rowId || isNaN(rowId)) {
+                        throw new Error('[BaserowPlus] Row ID is required. Set it explicitly or ensure input items have an "id" field (e.g. from a List or Get operation).');
+                    }
                     await request({
                         method: 'DELETE',
                         uri: `${base}/api/database/rows/table/${tableId}/${rowId}/`,
@@ -1268,8 +1341,8 @@ class BaserowPlus {
             const allRows = [];
             for (let i = 0; i < items.length; i++) {
                 const body = autoMapAll
-                    ? buildBodyFromObject(items[i].json, useNames, returnRaw, nameToId, fieldTypes)
-                    : buildBodyFromFields(this.getNodeParameter('fields', i, { field: [] }), useNames, returnRaw, nameToId, fieldTypes);
+                    ? buildBodyFromObject(items[i].json, useNames, returnRaw, nameToId, fieldTypes, fieldMeta)
+                    : buildBodyFromFields(this.getNodeParameter('fields', i, { field: [] }), useNames, returnRaw, nameToId, fieldTypes, fieldMeta);
                 allRows.push(body);
             }
 
@@ -1326,15 +1399,15 @@ class BaserowPlus {
                         throw new Error(`[BaserowPlus] batchUpdate: Item ${i} missing "id" field. Either provide Row IDs or include "id" in each item.`);
                     }
                     delete itemJson.id;
-                    const body = buildBodyFromObject(itemJson, useNames, returnRaw, nameToId, fieldTypes);
+                    const body = buildBodyFromObject(itemJson, useNames, returnRaw, nameToId, fieldTypes, fieldMeta);
                     body.id = Number(rowId);
                     allRows.push(body);
                 }
             } else {
                 // Shared-fields mode: same body applied to all explicit IDs
                 const bodyBase = autoMapAll
-                    ? buildBodyFromObject(items[0]?.json, useNames, returnRaw, nameToId, fieldTypes)
-                    : buildBodyFromFields(this.getNodeParameter('batchFields', 0, { field: [] }), useNames, returnRaw, nameToId, fieldTypes);
+                    ? buildBodyFromObject(items[0]?.json, useNames, returnRaw, nameToId, fieldTypes, fieldMeta)
+                    : buildBodyFromFields(this.getNodeParameter('batchFields', 0, { field: [] }), useNames, returnRaw, nameToId, fieldTypes, fieldMeta);
 
                 for (const id of explicitIds) {
                     allRows.push({ id, ...bodyBase });
@@ -1412,10 +1485,10 @@ class BaserowPlus {
                     let body;
 
                     if (autoMapAll) {
-                        body = buildBodyFromObject(items[i].json, useNames, returnRaw, nameToId, fieldTypes);
+                        body = buildBodyFromObject(items[i].json, useNames, returnRaw, nameToId, fieldTypes, fieldMeta);
                     } else {
                         const fieldsInput = this.getNodeParameter('fields', i, { field: [] });
-                        body = buildBodyFromFields(fieldsInput, useNames, returnRaw, nameToId, fieldTypes);
+                        body = buildBodyFromFields(fieldsInput, useNames, returnRaw, nameToId, fieldTypes, fieldMeta);
                     }
 
                     // FIX #4: Read match value directly from the input item or body.
@@ -1450,6 +1523,9 @@ class BaserowPlus {
                     });
 
                     const existing = (found.results || [])[0];
+                    if (found.count > 1) {
+                        console.warn(`[BaserowPlus] Upsert: ${found.count} rows match "${upsertField}" = "${matchValue}". Updating first match (row ${existing.id}). Consider adding a unique constraint in Baserow.`);
+                    }
                     let res;
 
                     if (existing) {

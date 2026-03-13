@@ -13,10 +13,10 @@ Field-type-aware serialization, true batch API (up to 200 rows per request), ups
 
 ### Docker / Custom Nodes Directory
 
-Copy the entire `nodes-basedrow-v3` folder into your n8n custom nodes directory:
+Copy the entire `n8n-nodes-baserow-plus` folder into your n8n custom nodes directory:
 
 ```bash
-scp -r nodes-basedrow-v3/ user@server:/path/to/n8n/custom/
+scp -r n8n-nodes-baserow-plus/ user@server:/path/to/n8n/custom/
 ```
 
 Then restart n8n:
