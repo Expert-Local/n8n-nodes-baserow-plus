@@ -110,7 +110,7 @@ The node fetches each table's field schema and uses field type information for p
 |--------------------|---------------|
 | `link_row` | Integer array — `[18]` not `'[18]'`. Empty `[]` allowed. Single int auto-wrapped. Invalid values throw with a clear message. |
 | `boolean` | Coerces `"true"`, `"false"`, `1`, `0` to actual booleans |
-| `number` | Coerces string to Number, then **auto-rounds to the field's configured decimal places** (reads from Baserow schema). A field set to 2 decimals turns `12.874523` into `12.87` automatically. |
+| `number` | Coerces string to Number, then **auto-rounds to the field's configured decimal places** (reads `number_decimal_places` from Baserow schema). A field set to 0 decimals turns `12.874523` into `13`, 2 decimals turns it into `12.87`. No manual `toFixed()` needed. |
 | `rating` | Coerces to integer via `Math.round()` |
 | `single_select` | Ensures string |
 | `multiple_select` | Ensures string array (accepts comma-separated strings) |
@@ -123,7 +123,8 @@ When field type info is unavailable (e.g. cache miss), falls back to a heuristic
 
 ## Error Handling & Retry
 
-- **Human-readable validation errors:** Field IDs are translated to column names using the schema cache. Instead of `{"field_267": ["A valid number is required."]}` you get `"Revenue": A valid number is required.` Multiple field errors are piped together.
+- **Human-readable validation errors:** Field IDs are translated to column names using the schema cache. Instead of `{"field_267": ["A valid number is required."]}` you get `"Revenue": A valid number is required.` Multiple field errors are piped together with `|`.
+- **Batch validation errors deduplicated:** When the same field has the same error across multiple rows, it collapses to `All rows / "tech_score": Ensure that there are no more than 0 decimal places.` instead of repeating per row. Unique errors per row are shown individually as `Row 0,2 / "field": message`.
 - **429 retry:** Automatic retry on rate limiting with exponential backoff (1s, 2s, 4s). Respects `Retry-After` header.
 - **Configurable timeout:** Default 30s, adjustable per-node via the "Request Timeout" parameter
 - **Continue on fail:** All operations respect n8n's `continueOnFail()` pattern

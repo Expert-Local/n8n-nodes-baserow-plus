@@ -69,22 +69,33 @@ function parseBaserowError(error, idToName = {}) {
             for (const [fieldKey, errors] of Object.entries(detail)) {
                 // Batch API format: detail.items = { "0": { field_xxx: ["err"] }, "1": ... }
                 if (fieldKey === 'items' && errors && typeof errors === 'object' && !Array.isArray(errors)) {
+                    // Collect per-field errors across all rows, then deduplicate
+                    // Structure: { "fieldName: message" -> [rowIndex, ...] }
+                    const fieldMsgRows = {};
                     for (const [rowIndex, rowDetail] of Object.entries(errors)) {
-                        if (rowDetail && typeof rowDetail === 'object') {
-                            for (const [rFieldKey, rErrors] of Object.entries(rowDetail)) {
-                                const rFieldName = idToName[rFieldKey] || rFieldKey;
-                                const msgs = Array.isArray(rErrors)
-                                    ? rErrors.map(e => (typeof e === 'string' ? e : (e.detail || e.message || JSON.stringify(e)))).join('; ')
-                                    : String(rErrors);
-                                fieldErrors.push(`Row ${rowIndex} / "${rFieldName}": ${msgs}`);
-                            }
+                        if (!rowDetail || typeof rowDetail !== 'object') continue;
+                        for (const [rFieldKey, rErrors] of Object.entries(rowDetail)) {
+                            const rFieldName = idToName[rFieldKey] || rFieldKey;
+                            const msgs = Array.isArray(rErrors)
+                                ? rErrors.map(e => (typeof e === 'string' ? e : (e.error || e.detail || e.message || JSON.stringify(e)))).join('; ')
+                                : String(rErrors);
+                            const key = `"${rFieldName}": ${msgs}`;
+                            if (!fieldMsgRows[key]) fieldMsgRows[key] = [];
+                            fieldMsgRows[key].push(Number(rowIndex));
                         }
+                    }
+                    const totalRows = Object.keys(errors).length;
+                    for (const [msg, rows] of Object.entries(fieldMsgRows)) {
+                        const prefix = rows.length === totalRows
+                            ? 'All rows'
+                            : `Row${rows.length > 1 ? 's' : ''} ${rows.join(',')}`;
+                        fieldErrors.push(`${prefix} / ${msg}`);
                     }
                     continue;
                 }
                 const fieldName = idToName[fieldKey] || fieldKey;
                 const messages = Array.isArray(errors)
-                    ? errors.map(e => (typeof e === 'string' ? e : (e.detail || e.message || JSON.stringify(e)))).join('; ')
+                    ? errors.map(e => (typeof e === 'string' ? e : (e.error || e.detail || e.message || JSON.stringify(e)))).join('; ')
                     : (errors && typeof errors === 'object' ? JSON.stringify(errors) : String(errors));
                 fieldErrors.push(`"${fieldName}": ${messages}`);
             }
@@ -188,11 +199,15 @@ async function getFieldMaps(ctx, baseUrl, apiToken, tableId, forceRefresh = fals
             fieldTypes[field.name] = field.type;
             // Also store by field_id key for lookups when working with raw IDs
             fieldTypes[`field_${field.id}`] = field.type;
-            // Store decimal_places for number fields (used for auto-rounding)
-            if (field.type === 'number' && field.decimal_places !== undefined) {
-                const meta = { decimal_places: field.decimal_places };
-                fieldMeta[field.name] = meta;
-                fieldMeta[`field_${field.id}`] = meta;
+            // Store decimal_places for number fields (used for auto-rounding).
+            // Baserow API returns the property as `number_decimal_places` (may be a string).
+            if (field.type === 'number') {
+                const dp = field.number_decimal_places ?? field.decimal_places;
+                if (dp !== undefined && dp !== null) {
+                    const meta = { decimal_places: Number(dp) };
+                    fieldMeta[field.name] = meta;
+                    fieldMeta[`field_${field.id}`] = meta;
+                }
             }
         }
 
