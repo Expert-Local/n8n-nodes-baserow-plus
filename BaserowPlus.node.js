@@ -67,10 +67,25 @@ function parseBaserowError(error, idToName = {}) {
         if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
             const fieldErrors = [];
             for (const [fieldKey, errors] of Object.entries(detail)) {
+                // Batch API format: detail.items = { "0": { field_xxx: ["err"] }, "1": ... }
+                if (fieldKey === 'items' && errors && typeof errors === 'object' && !Array.isArray(errors)) {
+                    for (const [rowIndex, rowDetail] of Object.entries(errors)) {
+                        if (rowDetail && typeof rowDetail === 'object') {
+                            for (const [rFieldKey, rErrors] of Object.entries(rowDetail)) {
+                                const rFieldName = idToName[rFieldKey] || rFieldKey;
+                                const msgs = Array.isArray(rErrors)
+                                    ? rErrors.map(e => (typeof e === 'string' ? e : (e.detail || e.message || JSON.stringify(e)))).join('; ')
+                                    : String(rErrors);
+                                fieldErrors.push(`Row ${rowIndex} / "${rFieldName}": ${msgs}`);
+                            }
+                        }
+                    }
+                    continue;
+                }
                 const fieldName = idToName[fieldKey] || fieldKey;
                 const messages = Array.isArray(errors)
                     ? errors.map(e => (typeof e === 'string' ? e : (e.detail || e.message || JSON.stringify(e)))).join('; ')
-                    : String(errors);
+                    : (errors && typeof errors === 'object' ? JSON.stringify(errors) : String(errors));
                 fieldErrors.push(`"${fieldName}": ${messages}`);
             }
             if (fieldErrors.length > 0) {
