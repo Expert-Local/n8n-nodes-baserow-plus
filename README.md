@@ -7,7 +7,7 @@
 <p align="center">Production-grade n8n community node for <a href="https://baserow.io">Baserow</a> — the open-source Airtable alternative.</p>
 <p align="center">Built by <a href="https://expertlocal.ca">Expert Local</a></p>
 
-Field-type-aware serialization, true batch API (up to 200 rows per request), upsert, lookup, automatic retry with exponential backoff, and parallel multi-table fetch.
+Field-type-aware serialization, decimal auto-normalization, human-readable validation errors, true batch API (up to 200 rows per request), upsert, lookup, automatic retry with exponential backoff, and parallel multi-table fetch.
 
 ## Installation
 
@@ -67,10 +67,10 @@ Retrieve one or more rows by ID. Accepts a single ID or comma-separated IDs.
 Create a new row. Supports both auto-mapping from input JSON and manual field configuration.
 
 ### Update
-Update an existing row by ID.
+Update an existing row by ID. Leave Row ID blank to auto-detect from the input item's `id` field — works automatically after List, Get, or Lookup operations.
 
 ### Delete
-Delete a row by ID.
+Delete a row by ID. Same auto-detect behaviour as Update.
 
 ### Batch Create
 Create multiple rows using Baserow's batch API endpoint. Sends up to 200 rows per request, automatically chunking larger sets.
@@ -108,9 +108,10 @@ The node fetches each table's field schema and uses field type information for p
 
 | Baserow Field Type | Serialization |
 |--------------------|---------------|
-| `link_row` | Integer array — `[18]` not `'[18]'`. Empty `[]` allowed. Single int auto-wrapped. |
+| `link_row` | Integer array — `[18]` not `'[18]'`. Empty `[]` allowed. Single int auto-wrapped. Invalid values throw with a clear message. |
 | `boolean` | Coerces `"true"`, `"false"`, `1`, `0` to actual booleans |
-| `number`, `rating` | Coerces string to Number |
+| `number` | Coerces string to Number, then **auto-rounds to the field's configured decimal places** (reads from Baserow schema). A field set to 2 decimals turns `12.874523` into `12.87` automatically. |
+| `rating` | Coerces to integer via `Math.round()` |
 | `single_select` | Ensures string |
 | `multiple_select` | Ensures string array (accepts comma-separated strings) |
 | `date` | Ensures ISO string |
@@ -122,7 +123,7 @@ When field type info is unavailable (e.g. cache miss), falls back to a heuristic
 
 ## Error Handling & Retry
 
-- **Structured errors:** Extracts Baserow error codes and detail messages for clear diagnostics
+- **Human-readable validation errors:** Field IDs are translated to column names using the schema cache. Instead of `{"field_267": ["A valid number is required."]}` you get `"Revenue": A valid number is required.` Multiple field errors are piped together.
 - **429 retry:** Automatic retry on rate limiting with exponential backoff (1s, 2s, 4s). Respects `Retry-After` header.
 - **Configurable timeout:** Default 30s, adjustable per-node via the "Request Timeout" parameter
 - **Continue on fail:** All operations respect n8n's `continueOnFail()` pattern
