@@ -1,11 +1,20 @@
 <p align="center">
-  <img src="logo.svg" alt="Expert Local" width="80" />
+  <img src="logo.svg" alt="Baserow Plus" width="80" />
 </p>
 
 <h1 align="center">n8n-nodes-baserow-plus</h1>
 
 <p align="center">Production-grade n8n community node for <a href="https://baserow.io">Baserow</a> — the open-source Airtable alternative.</p>
 <p align="center">Built by <a href="https://expertlocal.ca">Expert Local</a></p>
+
+<p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-3.1.2-blue.svg" />
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green.svg" />
+  <img alt="n8n" src="https://img.shields.io/badge/n8n-community%20node-ff6d5a.svg" />
+  <img alt="Baserow" src="https://img.shields.io/badge/baserow-compatible-2B7269.svg" />
+</p>
+
+---
 
 Field-type-aware serialization, decimal auto-normalization, human-readable validation errors, true batch API (up to 200 rows per request), upsert, lookup, automatic retry with exponential backoff, and parallel multi-table fetch.
 

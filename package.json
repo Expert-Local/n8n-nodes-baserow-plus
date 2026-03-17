@@ -16,13 +16,20 @@
     "n8n-community-node-package",
     "n8n-custom-node",
     "baserow",
+    "baserow-api",
     "database",
     "no-code",
     "batch",
-    "upsert"
+    "upsert",
+    "automation",
+    "airtable-alternative"
   ],
-  "author": "Steven Lefebvre",
+  "author": "Steven Lefebvre <slefebvre@expertlocal.ca>",
   "license": "MIT",
+  "homepage": "https://github.com/Expert-Local/n8n-nodes-baserow-plus#readme",
+  "bugs": {
+    "url": "https://github.com/Expert-Local/n8n-nodes-baserow-plus/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/Expert-Local/n8n-nodes-baserow-plus"
